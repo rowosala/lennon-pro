@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+steganografi_env/
+ENV/
+env.bak/
+venv.bak/
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# Audio files
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.aac
+
+# Output files
+output/
+temp/
+*.tmp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Test outputs
+test_*.wav
+*_stego.*
+*_backup.*
+*_converted.*
