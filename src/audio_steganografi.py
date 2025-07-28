@@ -3,7 +3,8 @@ Module Audio Steganography
 ==========================
 
 Module ini mengimplementasikan teknik steganografi pada file audio
-menggunakan metode Least Significant Bit (LSB).
+menggunakan metode Least Significant Bit (LSB) dengan fitur analisis kualitas
+dan pengujian ketahanan.
 
 Author: modo
 Date: 2025
@@ -12,6 +13,7 @@ Date: 2025
 import numpy as np
 import soundfile as sf
 import struct
+import os
 from .enkripsi import AESEncryption
 from .utils import convert_to_wav, validate_file, get_file_info
 
@@ -39,15 +41,9 @@ class AudioSteganography:
             
         Returns:
             str: String binary (contoh: '01001000')
-            
-        Penjelasan:
-            - Setiap karakter dikonversi ke ASCII
-            - ASCII dikonversi ke binary 8-bit
-            - Hasil digabungkan menjadi string panjang
         """
         binary = ''
         for char in text:
-            # Konversi karakter ke ASCII, lalu ke binary 8-bit
             binary += format(ord(char), '08b')
         return binary
     
@@ -60,19 +56,83 @@ class AudioSteganography:
             
         Returns:
             str: Teks asli
-            
-        Penjelasan:
-            - Binary dipecah per 8 bit (1 byte)
-            - Setiap 8 bit dikonversi ke integer
-            - Integer dikonversi ke karakter ASCII
         """
         text = ''
         for i in range(0, len(binary), 8):
-            # Ambil 8 bit, konversi ke integer, lalu ke karakter
             byte = binary[i:i+8]
-            if len(byte) == 8:  # Pastikan 8 bit lengkap
+            if len(byte) == 8:
                 text += chr(int(byte, 2))
         return text
+    
+    def calculate_psnr(self, original: np.ndarray, modified: np.ndarray) -> float:
+        """
+        Menghitung Peak Signal-to-Noise Ratio (PSNR) antara audio asli dan termodifikasi
+        
+        Args:
+            original (np.ndarray): Audio asli
+            modified (np.ndarray): Audio yang telah dimodifikasi
+            
+        Returns:
+            float: Nilai PSNR dalam dB
+        """
+        # Pastikan kedua array memiliki ukuran yang sama
+        min_len = min(len(original), len(modified))
+        original = original[:min_len]
+        modified = modified[:min_len]
+        
+        # Hitung MSE (Mean Squared Error)
+        mse = np.mean((original - modified) ** 2)
+        
+        if mse == 0:
+            return float('inf')  # Tidak ada perbedaan
+        
+        # Hitung PSNR
+        max_pixel_value = 1.0  # Untuk audio normalized [-1, 1]
+        psnr = 20 * np.log10(max_pixel_value / np.sqrt(mse))
+        
+        return psnr
+    
+    def calculate_mse(self, original: np.ndarray, modified: np.ndarray) -> float:
+        """
+        Menghitung Mean Squared Error (MSE) antara audio asli dan termodifikasi
+        
+        Args:
+            original (np.ndarray): Audio asli
+            modified (np.ndarray): Audio yang telah dimodifikasi
+            
+        Returns:
+            float: Nilai MSE
+        """
+        min_len = min(len(original), len(modified))
+        original = original[:min_len]
+        modified = modified[:min_len]
+        
+        mse = np.mean((original - modified) ** 2)
+        return mse
+    
+    def calculate_snr(self, original: np.ndarray, modified: np.ndarray) -> float:
+        """
+        Menghitung Signal-to-Noise Ratio (SNR)
+        
+        Args:
+            original (np.ndarray): Audio asli
+            modified (np.ndarray): Audio yang telah dimodifikasi
+            
+        Returns:
+            float: Nilai SNR dalam dB
+        """
+        min_len = min(len(original), len(modified))
+        original = original[:min_len]
+        modified = modified[:min_len]
+        
+        signal_power = np.mean(original ** 2)
+        noise_power = np.mean((original - modified) ** 2)
+        
+        if noise_power == 0:
+            return float('inf')
+        
+        snr = 10 * np.log10(signal_power / noise_power)
+        return snr
     
     def embed_lsb(self, audio_data: np.ndarray, binary_message: str) -> np.ndarray:
         """
@@ -84,48 +144,30 @@ class AudioSteganography:
             
         Returns:
             np.ndarray: Data audio yang sudah berisi pesan tersembunyi
-            
-        Penjelasan:
-            - LSB (Least Significant Bit) adalah bit terakhir dari setiap sample
-            - Modifikasi LSB tidak mengubah kualitas audio secara signifikan
-            - Setiap bit pesan mengganti 1 LSB dari sample audio
         """
-        # Copy array agar tidak memodifikasi original
         stego_audio = audio_data.copy()
         
-        # Flatten array jika multi-channel
         if len(stego_audio.shape) > 1:
             stego_audio_flat = stego_audio.flatten()
         else:
             stego_audio_flat = stego_audio.copy()
         
         # Convert audio ke integer untuk bit manipulation
-        # Asumsi audio dalam range [-1, 1], konversi ke 16-bit integer
         audio_int = (stego_audio_flat * 32767).astype(np.int16)
         
-        # Cek apakah audio cukup besar untuk menampung pesan
         if len(binary_message) > len(audio_int):
             raise Exception(f"File audio terlalu kecil! Diperlukan minimal {len(binary_message)} samples, tersedia {len(audio_int)}")
         
         # Sisipkan setiap bit pesan ke LSB audio
         for i, bit in enumerate(binary_message):
-            # Ambil sample audio saat ini
             current_sample = int(audio_int[i])
-            
-            # Ganti LSB dengan bit pesan
-            # Hapus bit terakhir (AND dengan 11111110)
             current_sample = current_sample & 0xFFFE
-            
-            # Tambahkan bit pesan (OR dengan bit)
             current_sample = current_sample | int(bit)
-            
-            # Simpan kembali
             audio_int[i] = current_sample
         
         # Convert kembali ke float range [-1, 1]
         stego_audio_flat = audio_int.astype(np.float32) / 32767.0
         
-        # Reshape kembali jika perlu
         if len(stego_audio.shape) > 1:
             stego_audio = stego_audio_flat.reshape(stego_audio.shape)
         else:
@@ -143,33 +185,170 @@ class AudioSteganography:
             
         Returns:
             str: Pesan dalam format binary
-            
-        Penjelasan:
-            - Membaca LSB dari setiap sample audio
-            - Mengumpulkan bit-bit tersebut menjadi pesan binary
-            - Berhenti saat delimiter ditemukan atau panjang tercapai
         """
-        # Flatten array jika multi-channel
         if len(audio_data.shape) > 1:
             audio_flat = audio_data.flatten()
         else:
             audio_flat = audio_data.copy()
         
-        # Convert ke integer
         audio_int = (audio_flat * 32767).astype(np.int16)
         
-        # Ekstrak LSB dari setiap sample
         binary_message = ''
         max_bits = len(audio_int) if message_length is None else message_length * 8
         
         for i in range(min(max_bits, len(audio_int))):
-            # Ambil LSB (bit terakhir)
             lsb = int(audio_int[i]) & 1
             binary_message += str(lsb)
         
         return binary_message
     
-    def embed_message(self, audio_file: str, message: str, password: str, output_file: str = None) -> str:
+    def add_noise(self, audio_data: np.ndarray, noise_level: float = 0.01) -> np.ndarray:
+        """
+        Menambahkan noise ke audio untuk pengujian ketahanan
+        
+        Args:
+            audio_data (np.ndarray): Data audio
+            noise_level (float): Level noise (0.0 - 1.0)
+            
+        Returns:
+            np.ndarray: Audio dengan noise
+        """
+        noise = np.random.normal(0, noise_level, audio_data.shape)
+        noisy_audio = audio_data + noise
+        
+        # Clamp ke range [-1, 1]
+        noisy_audio = np.clip(noisy_audio, -1.0, 1.0)
+        
+        return noisy_audio
+    
+    def compress_audio(self, audio_data: np.ndarray, sample_rate: int, compression_ratio: float = 0.5) -> np.ndarray:
+        """
+        Simulasi kompresi audio untuk pengujian ketahanan
+        
+        Args:
+            audio_data (np.ndarray): Data audio
+            sample_rate (int): Sample rate audio
+            compression_ratio (float): Rasio kompresi (0.0 - 1.0)
+            
+        Returns:
+            np.ndarray: Audio yang telah dikompres
+        """
+        # Simulasi kompresi dengan mengurangi bit depth
+        bit_reduction = int(16 * (1 - compression_ratio))
+        scale_factor = 2 ** bit_reduction
+        
+        compressed = np.round(audio_data * scale_factor) / scale_factor
+        return compressed
+    
+    def test_robustness(self, stego_audio: np.ndarray, sample_rate: int, password: str, 
+                       original_message: str) -> dict:
+        """
+        Menguji ketahanan steganografi terhadap berbagai serangan
+        
+        Args:
+            stego_audio (np.ndarray): Audio dengan pesan tersembunyi
+            sample_rate (int): Sample rate audio
+            password (str): Password untuk dekripsi
+            original_message (str): Pesan asli untuk verifikasi
+            
+        Returns:
+            dict: Hasil pengujian ketahanan
+        """
+        results = {
+            'original': {'success': False, 'message': '', 'error': ''},
+            'noise_low': {'success': False, 'message': '', 'error': ''},
+            'noise_medium': {'success': False, 'message': '', 'error': ''},
+            'noise_high': {'success': False, 'message': '', 'error': ''},
+            'compression_light': {'success': False, 'message': '', 'error': ''},
+            'compression_heavy': {'success': False, 'message': '', 'error': ''}
+        }
+        
+        # Test 1: Audio asli (tanpa modifikasi)
+        try:
+            message = self._extract_from_array(stego_audio, password)
+            results['original']['success'] = (message == original_message)
+            results['original']['message'] = message
+        except Exception as e:
+            results['original']['error'] = str(e)
+        
+        # Test 2: Noise rendah (0.5%)
+        try:
+            noisy_audio = self.add_noise(stego_audio, 0.005)
+            message = self._extract_from_array(noisy_audio, password)
+            results['noise_low']['success'] = (message == original_message)
+            results['noise_low']['message'] = message
+        except Exception as e:
+            results['noise_low']['error'] = str(e)
+        
+        # Test 3: Noise sedang (1%)
+        try:
+            noisy_audio = self.add_noise(stego_audio, 0.01)
+            message = self._extract_from_array(noisy_audio, password)
+            results['noise_medium']['success'] = (message == original_message)
+            results['noise_medium']['message'] = message
+        except Exception as e:
+            results['noise_medium']['error'] = str(e)
+        
+        # Test 4: Noise tinggi (2%)
+        try:
+            noisy_audio = self.add_noise(stego_audio, 0.02)
+            message = self._extract_from_array(noisy_audio, password)
+            results['noise_high']['success'] = (message == original_message)
+            results['noise_high']['message'] = message
+        except Exception as e:
+            results['noise_high']['error'] = str(e)
+        
+        # Test 5: Kompresi ringan
+        try:
+            compressed_audio = self.compress_audio(stego_audio, sample_rate, 0.2)
+            message = self._extract_from_array(compressed_audio, password)
+            results['compression_light']['success'] = (message == original_message)
+            results['compression_light']['message'] = message
+        except Exception as e:
+            results['compression_light']['error'] = str(e)
+        
+        # Test 6: Kompresi berat
+        try:
+            compressed_audio = self.compress_audio(stego_audio, sample_rate, 0.5)
+            message = self._extract_from_array(compressed_audio, password)
+            results['compression_heavy']['success'] = (message == original_message)
+            results['compression_heavy']['message'] = message
+        except Exception as e:
+            results['compression_heavy']['error'] = str(e)
+        
+        return results
+    
+    def _extract_from_array(self, audio_data: np.ndarray, password: str) -> str:
+        """
+        Helper function untuk ekstrak pesan dari array audio
+        
+        Args:
+            audio_data (np.ndarray): Data audio
+            password (str): Password untuk dekripsi
+            
+        Returns:
+            str: Pesan yang diekstrak
+        """
+        binary_data = self.extract_lsb(audio_data)
+        
+        bytes_data = b''
+        for i in range(0, len(binary_data), 8):
+            byte_bits = binary_data[i:i+8]
+            if len(byte_bits) == 8:
+                bytes_data += bytes([int(byte_bits, 2)])
+                
+                if bytes_data.endswith(self.delimiter):
+                    encrypted_message = bytes_data[:-len(self.delimiter)]
+                    break
+        else:
+            raise Exception("Delimiter tidak ditemukan")
+        
+        decrypted_message = self.aes_encryption.decrypt(encrypted_message, password)
+        return decrypted_message
+    
+    def embed_message(self, audio_file: str, message: str, password: str, 
+                     output_file: str = None, output_format: str = 'wav',
+                     analyze_quality: bool = True) -> dict:
         """
         Fungsi utama untuk menyisipkan pesan terenkripsi ke audio
         
@@ -178,17 +357,11 @@ class AudioSteganography:
             message (str): Pesan yang akan disembunyikan
             password (str): Password untuk enkripsi
             output_file (str, optional): Path file output
+            output_format (str): Format output ('wav', 'flac', 'mp3')
+            analyze_quality (bool): Apakah melakukan analisis kualitas
             
         Returns:
-            str: Path file output yang berisi pesan tersembunyi
-            
-        Proses:
-            1. Validasi file audio
-            2. Konversi ke WAV jika perlu
-            3. Enkripsi pesan dengan AES-128
-            4. Konversi pesan terenkripsi + delimiter ke binary
-            5. Sisipkan ke audio menggunakan LSB
-            6. Simpan file output
+            dict: Informasi hasil embedding termasuk analisis kualitas
         """
         try:
             print("🔐 Memulai proses penyisipan pesan...")
@@ -205,7 +378,7 @@ class AudioSteganography:
             
             # 3. Baca file audio
             print("📖 Membaca file audio...")
-            audio_data, sample_rate = sf.read(working_file)
+            original_audio, sample_rate = sf.read(working_file)
             
             # 4. Enkripsi pesan
             print("🔒 Mengenkripsi pesan...")
@@ -222,7 +395,7 @@ class AudioSteganography:
             
             # 7. Cek kapasitas
             required_bits = len(binary_message)
-            available_bits = len(audio_data.flatten()) if len(audio_data.shape) > 1 else len(audio_data)
+            available_bits = len(original_audio.flatten()) if len(original_audio.shape) > 1 else len(original_audio)
             
             if required_bits > available_bits:
                 raise Exception(f"Pesan terlalu panjang! Diperlukan {required_bits} bit, tersedia {available_bits} bit")
@@ -234,18 +407,65 @@ class AudioSteganography:
             
             # 8. Sisipkan pesan
             print("🔧 Menyisipkan pesan ke audio...")
-            stego_audio = self.embed_lsb(audio_data, binary_message)
+            stego_audio = self.embed_lsb(original_audio, binary_message)
             
-            # 9. Simpan file output
+            # 9. Tentukan file output
             if output_file is None:
-                base_name = audio_file.rsplit('.', 1)[0]
-                output_file = f"{base_name}_stego.wav"
+                base_name = os.path.splitext(os.path.basename(audio_file))[0]
+                output_file = f"output/{base_name}_stego.{output_format}"
             
+            # 10. Simpan file output
             print(f"💾 Menyimpan file output: {output_file}")
-            sf.write(output_file, stego_audio, sample_rate)
+            
+            # Pastikan direktori output ada
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+            
+            if output_format.lower() == 'wav':
+                sf.write(output_file, stego_audio, sample_rate)
+            elif output_format.lower() == 'flac':
+                sf.write(output_file, stego_audio, sample_rate, format='FLAC')
+            elif output_format.lower() == 'mp3':
+                # Untuk MP3, simpan sebagai WAV dulu lalu konversi
+                temp_wav = output_file.replace('.mp3', '_temp.wav')
+                sf.write(temp_wav, stego_audio, sample_rate)
+                
+                from pydub import AudioSegment
+                audio_segment = AudioSegment.from_wav(temp_wav)
+                audio_segment.export(output_file, format="mp3", bitrate="192k")
+                os.remove(temp_wav)
+            else:
+                sf.write(output_file, stego_audio, sample_rate)
+            
+            # 11. Analisis kualitas
+            result = {
+                'output_file': output_file,
+                'message_length': len(message),
+                'encrypted_length': len(encrypted_message),
+                'binary_bits': required_bits,
+                'capacity_used': (required_bits / available_bits) * 100,
+                'format': output_format.upper()
+            }
+            
+            if analyze_quality:
+                print("📊 Menganalisis kualitas audio...")
+                
+                # Hitung metrik kualitas
+                psnr = self.calculate_psnr(original_audio, stego_audio)
+                mse = self.calculate_mse(original_audio, stego_audio)
+                snr = self.calculate_snr(original_audio, stego_audio)
+                
+                result['quality_metrics'] = {
+                    'psnr_db': round(psnr, 2),
+                    'mse': round(mse, 8),
+                    'snr_db': round(snr, 2)
+                }
+                
+                print(f"📊 PSNR: {psnr:.2f} dB")
+                print(f"📊 MSE: {mse:.8f}")
+                print(f"📊 SNR: {snr:.2f} dB")
             
             print("✅ Proses penyisipan pesan berhasil!")
-            return output_file
+            return result
             
         except Exception as e:
             raise Exception(f"Error dalam penyisipan pesan: {str(e)}")
@@ -260,14 +480,6 @@ class AudioSteganography:
             
         Returns:
             str: Pesan asli yang telah didekripsi
-            
-        Proses:
-            1. Validasi file audio
-            2. Baca file audio
-            3. Ekstrak binary dari LSB
-            4. Cari delimiter dan pisahkan pesan
-            5. Dekripsi pesan dengan AES-128
-            6. Return pesan asli
         """
         try:
             print("🔍 Memulai proses ekstraksi pesan...")
@@ -280,32 +492,11 @@ class AudioSteganography:
             print("📖 Membaca file audio...")
             audio_data, sample_rate = sf.read(stego_audio_file)
             
-            # 3. Ekstrak binary dari LSB
-            print("🔢 Mengekstrak binary dari audio...")
-            binary_data = self.extract_lsb(audio_data)
-            
-            # 4. Konversi binary ke bytes
-            print("🔍 Mencari delimiter dalam data...")
-            bytes_data = b''
-            for i in range(0, len(binary_data), 8):
-                byte_bits = binary_data[i:i+8]
-                if len(byte_bits) == 8:
-                    bytes_data += bytes([int(byte_bits, 2)])
-                    
-                    # Cek apakah delimiter ditemukan
-                    if bytes_data.endswith(self.delimiter):
-                        # Hapus delimiter dari data
-                        encrypted_message = bytes_data[:-len(self.delimiter)]
-                        break
-            else:
-                raise Exception("Delimiter tidak ditemukan. Mungkin file tidak berisi pesan atau password salah.")
-            
-            # 5. Dekripsi pesan
-            print("🔓 Mendekripsi pesan...")
-            decrypted_message = self.aes_encryption.decrypt(encrypted_message, password)
+            # 3. Ekstrak pesan
+            message = self._extract_from_array(audio_data, password)
             
             print("✅ Proses ekstraksi pesan berhasil!")
-            return decrypted_message
+            return message
             
         except Exception as e:
             raise Exception(f"Error dalam ekstraksi pesan: {str(e)}")
@@ -367,14 +558,19 @@ def test_steganography():
         capacity = stego.get_capacity(audio_file)
         print(f"📊 Kapasitas maksimal: {capacity['max_chars']} karakter")
         
-        # Test embed
+        # Test embed dengan analisis kualitas
         print(f"\n🔐 Testing embed pesan...")
-        stego_file = stego.embed_message(audio_file, message, password)
-        print(f"✅ Pesan berhasil disimpan di: {stego_file}")
+        result = stego.embed_message(audio_file, message, password, analyze_quality=True)
+        print(f"✅ Pesan berhasil disimpan di: {result['output_file']}")
+        
+        if 'quality_metrics' in result:
+            print(f"📊 PSNR: {result['quality_metrics']['psnr_db']} dB")
+            print(f"📊 MSE: {result['quality_metrics']['mse']}")
+            print(f"📊 SNR: {result['quality_metrics']['snr_db']} dB")
         
         # Test extract
         print(f"\n🔍 Testing extract pesan...")
-        extracted_message = stego.extract_message(stego_file, password)
+        extracted_message = stego.extract_message(result['output_file'], password)
         print(f"📝 Pesan asli: {message}")
         print(f"📝 Pesan extract: {extracted_message}")
         
